@@ -99,19 +99,14 @@ class Example extends Phaser.Scene {
     this.raycaster.mapGameObjects(this.trafficLightVertBottom);
 
     this.matter.world.on("collisionstart", (event) => {
-      //console.log("collision", event);
       event.pairs.forEach((pair) => {
         const bodyA = pair.bodyA;
         const bodyB = pair.bodyB;
-        console.log(bodyA, bodyB);
         // Check if both bodies have the 'car' label
         if (
           bodyA.gameObject.label === "car" &&
           bodyB.gameObject.label === "car"
         ) {
-          // Two cars are colliding
-          console.log("Cars collided");
-
           bodyA.gameObject.crash();
           bodyB.gameObject.crash();
 
@@ -186,6 +181,33 @@ class Example extends Phaser.Scene {
         );
       }
     }, 5000);
+
+    this.createUi();
+  }
+
+  createUi() {
+    document.getElementById("test").addEventListener("click", () => {
+      this.trafficLightHorizLeft.toggle();
+      this.trafficLightHorizRight.toggle();
+      this.trafficLightVertBottom.toggle();
+      this.trafficLightVertTop.toggle();
+
+      if (this.trafficLightHorizLeft.disabled) {
+        this.raycaster.removeMappedObjects([
+          this.trafficLightHorizLeft,
+          this.trafficLightHorizRight,
+          this.trafficLightVertBottom,
+          this.trafficLightVertTop,
+        ])
+      } else {
+        this.raycaster.mapGameObjects([
+          this.trafficLightHorizLeft,
+          this.trafficLightHorizRight,
+          this.trafficLightVertBottom,
+          this.trafficLightVertTop,
+        ]);
+      }
+    });
   }
 
   drawRoad() {
@@ -193,13 +215,13 @@ class Example extends Phaser.Scene {
     const roadGraphics = this.add.graphics();
 
     // Set the position of the road in the middle of the scene
-    const roadY = this.cameras.main.height / 2 - ROAD_WIDTH / 2; // Adjust this value as needed
-    const roadX = this.cameras.main.width / 2 - ROAD_WIDTH / 2; // Adjust this value as needed
+    const roadY = this.cameras.main.height / 2 - ROAD_WIDTH / 2; 
+    const roadX = this.cameras.main.width / 2 - ROAD_WIDTH / 2; 
 
     // Set the width and color of the road
-    const roadHorizontalLength = this.cameras.main.width; // Adjust this value as needed
-    const roadVerticalLength = this.cameras.main.height; // Adjust this value as needed
-    const roadColor = 0x333333; // Adjust the color as needed
+    const roadHorizontalLength = this.cameras.main.width; 
+    const roadVerticalLength = this.cameras.main.height; 
+    const roadColor = 0x333333; 
 
     // Begin filling the road graphics
     roadGraphics.fillStyle(roadColor);
@@ -248,7 +270,7 @@ const config = {
   type: Phaser.WEBGL,
   width: 1280,
   height: 1024,
-  parent: "phaser-example",
+  parent: "game",
   physics: {
     default: "matter",
     matter: {

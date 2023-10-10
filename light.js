@@ -10,6 +10,7 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
     this.state = "green";
     this.stateIndex = 0;
     this.numberOfOverlaps = 0;
+    this.disabled = false;
 
     // Make the sensor invisible by default
     this.setAlpha(0);
@@ -37,7 +38,9 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
     this.text.setOrigin(0.5);
 
     setInterval(() => {
-      this.nextState();
+      if (!this.disabled) {
+        this.nextState();
+      }
     }, 12000);
   }
 
@@ -47,6 +50,15 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
       trafficLightColors[this.stateIndex % trafficLightColors.length];
 
     this.updateBackgroundColor();
+  }
+
+  toggle() {
+    this.disabled = !this.disabled;
+    if (this.disabled) {
+      this.background.clear();
+    } else {
+      this.updateBackgroundColor();
+    }
   }
 
   updateBackgroundColor() {
@@ -69,7 +81,6 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
   }
 
   collisionStart() {
-    console.log("collision start");
     this.numberOfOverlaps++;
     this.updateBackgroundColor();
     this.text.setText(this.counter);

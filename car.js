@@ -28,12 +28,8 @@ class Car extends Phaser.Physics.Matter.Sprite {
       Math.sin(this.rotation) * (CAR_LENGTH / 2 + 1)
     );
 
-    // // Create a ray for the car
-    // this.ray = Phaser.Physics.Matter.Matter.Query.ray([this.x, this.y], [this.x + this.offset.x, this.y + this.offset.y]);
-    console.log(this);
     this.scene.add.existing(this); // Add the car to the scene
-    //this.applyForce({ x: 0.011, y: 0 });
-    console.log(this.position);
+
     this.text = scene.add.text(
       this.body.position.x,
       this.body.position.y,
@@ -48,7 +44,6 @@ class Car extends Phaser.Physics.Matter.Sprite {
 
     // Calculate an offset for the ray to cast it in front of the car
     this.offset = new Phaser.Math.Vector2();
-    console.log(this.scene.raycaster);
 
     // Create a ray for the car
     this.ray = this.scene.raycaster.createRay();
@@ -76,12 +71,8 @@ class Car extends Phaser.Physics.Matter.Sprite {
     this.ray.setOrigin(this.x + this.offset.x, this.y + this.offset.y);
     this.ray.setAngle(this.rotation);
 
-    try {
-      // Cast the ray and get the intersection
-      this.intersection = this.ray.cast();
-    } catch (e) {
-      console.log("error", e);
-    }
+    // Cast the ray and get the intersection
+    this.intersection = this.ray.cast();
 
     this.rayGraphics.clear();
     this.rayGraphics.setDepth(this.depth + 1); // Set the depth
