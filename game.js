@@ -133,6 +133,11 @@ class Example extends Phaser.Scene {
 
     let i = 0;
     setInterval(() => {
+
+      if (document.hidden) {
+        return;
+      }
+
       if (this.sensorHorizLeft.numberOfOverlaps === 0) {
         i++;
         this.createCar(
