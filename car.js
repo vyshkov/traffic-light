@@ -1,6 +1,9 @@
 const CAR_WIDTH = 50;
 const CAR_LENGTH = 80;
+// Reach beyond the car's front; side rays use it as their length from the center.
 const RAY_LENGTH = 100;
+// Side ray angles (degrees) relative to the heading; kept under ~30 so oncoming-lane cars are not hit.
+const SIDE_RAY_ANGLES = [-30, -15, 15, 30];
 
 const { Vector, Query, World, Composite } = Phaser.Physics.Matter.Matter;
 
@@ -13,7 +16,8 @@ class Car extends Phaser.Physics.Matter.Sprite {
 
     this.speed = speed;
     this.initialSpeed = speed;
-    this.rayLength = RAY_LENGTH;
+    // Rays start at the center, so add half the car length to keep the reach past the front.
+    this.rayLength = RAY_LENGTH + CAR_LENGTH / 2;
     this.rayColor = 0xffffff;
     this.setDisplaySize(CAR_LENGTH, CAR_WIDTH);
 
@@ -21,12 +25,6 @@ class Car extends Phaser.Physics.Matter.Sprite {
     this.setMass(1);
     this.setIgnoreGravity(true);
     this.rayGraphics = this.scene.add.graphics();
-
-    // Calculate an offset for the ray to cast it in front of the car
-    this.offset = new Phaser.Math.Vector2(
-      Math.cos(this.rotation) * (CAR_LENGTH / 2 + 1),
-      Math.sin(this.rotation) * (CAR_LENGTH / 2 + 1)
-    );
 
     this.scene.add.existing(this); // Add the car to the scene
 
@@ -42,15 +40,25 @@ class Car extends Phaser.Physics.Matter.Sprite {
     );
     this.text.setOrigin(0.5);
 
-    // Calculate an offset for the ray to cast it in front of the car
-    this.offset = new Phaser.Math.Vector2();
-
     // Create a ray for the car
     this.ray = this.scene.raycaster.createRay();
     // Set the ray origin to the car position
-    this.ray.setOrigin(this.x + this.offset.x, this.y + this.offset.y);
+    this.ray.setOrigin(this.x, this.y);
     // Set the ray angle to the car angle
     this.ray.setAngle(this.rotation);
+
+    this.sideRays = SIDE_RAY_ANGLES.map((deg) => ({
+      ray: this.scene.raycaster.createRay(),
+      angle: Phaser.Math.DegToRad(deg),
+    }));
+  }
+
+  // Side rays only react to crashed or older cars, so two crossing cars can't block each other forever.
+  shouldYieldTo(other) {
+    return (
+      other.label === "car" &&
+      (other.crashed || Number(other.name) < Number(this.name))
+    );
   }
 
   crash() {
@@ -62,25 +70,26 @@ class Car extends Phaser.Physics.Matter.Sprite {
   }
 
   update() {
-    // Calculate an offset for the ray to cast it in front of the car
-    this.offset = new Phaser.Math.Vector2(
-      Math.cos(this.rotation) * (CAR_LENGTH / 2 + 1),
-      Math.sin(this.rotation) * (CAR_LENGTH / 2 + 1)
+    const originX = this.x;
+    const originY = this.y;
+    // The car is mapped too, so exclude it or rays starting at its center would hit itself.
+    const objects = this.scene.raycaster.mappedObjects.filter(
+      (object) => object !== this
     );
-    // Update the ray origin and angle
-    this.ray.setOrigin(this.x + this.offset.x, this.y + this.offset.y);
+
+    this.ray.setOrigin(originX, originY);
     this.ray.setAngle(this.rotation);
 
     // Cast the ray and get the intersection
-    this.intersection = this.ray.cast();
+    this.intersection = this.ray.cast({ objects });
 
     this.rayGraphics.clear();
     this.rayGraphics.setDepth(this.depth + 1); // Set the depth
     this.rayGraphics.beginPath();
-    this.rayGraphics.moveTo(this.offset.x + this.x, this.offset.y + this.y);
+    this.rayGraphics.moveTo(originX, originY);
     this.rayGraphics.lineTo(
-      this.offset.x + this.x + Math.cos(this.rotation) * this.rayLength,
-      this.offset.y + this.y + Math.sin(this.rotation) * this.rayLength
+      originX + Math.cos(this.rotation) * this.rayLength,
+      originY + Math.sin(this.rotation) * this.rayLength
     );
     this.rayGraphics.closePath();
     this.rayGraphics.strokePath();
@@ -92,6 +101,53 @@ class Car extends Phaser.Physics.Matter.Sprite {
         this.intersection.y,
         5
       );
+    }
+
+    let sideHit = null;
+
+    this.sideRays.forEach(({ ray, angle }) => {
+      const rayAngle = this.rotation + angle;
+      ray.setOrigin(originX, originY);
+      ray.setAngle(rayAngle);
+      const hit = ray.cast({ objects });
+
+      this.rayGraphics.beginPath();
+      this.rayGraphics.moveTo(originX, originY);
+      this.rayGraphics.lineTo(
+        originX + Math.cos(rayAngle) * RAY_LENGTH,
+        originY + Math.sin(rayAngle) * RAY_LENGTH
+      );
+      this.rayGraphics.closePath();
+      this.rayGraphics.strokePath();
+
+      if (!hit || !hit.object || !this.shouldYieldTo(hit.object)) {
+        return;
+      }
+      const hitDistance = Phaser.Math.Distance.Between(
+        originX,
+        originY,
+        hit.x,
+        hit.y
+      );
+      if (hitDistance < RAY_LENGTH) {
+        this.rayGraphics.strokeCircle(hit.x, hit.y, 5);
+        if (!sideHit || hitDistance < sideHit.distance) {
+          sideHit = { intersection: hit, distance: hitDistance };
+        }
+      }
+    });
+
+    // A traffic light straight ahead takes priority over side detections.
+    if (sideHit) {
+      const mainHit = this.intersection;
+      const mainIsLight =
+        mainHit && mainHit.object && mainHit.object.label === "trafficLight";
+      const mainDistance = mainHit
+        ? Phaser.Math.Distance.Between(originX, originY, mainHit.x, mainHit.y)
+        : Infinity;
+      if (!mainIsLight && sideHit.distance < mainDistance) {
+        this.intersection = sideHit.intersection;
+      }
     }
 
     this.text.setPosition(this.body.position.x, this.body.position.y);
@@ -106,7 +162,7 @@ class Car extends Phaser.Physics.Matter.Sprite {
       this.speed = 0;
     } else if (this.intersection && this.intersection.object) {
       let distance = Phaser.Math.Distance.BetweenPoints(
-        new Phaser.Math.Vector2(this.x + this.offset.x, this.y + this.offset.y),
+        new Phaser.Math.Vector2(originX, originY),
         this.intersection
       );
 
@@ -152,6 +208,7 @@ class Car extends Phaser.Physics.Matter.Sprite {
   destroy() {
     this.destroyed = true;
     this.ray.destroy();
+    this.sideRays.forEach(({ ray }) => ray.destroy());
     this.rayGraphics.destroy();
     this.text.destroy();
     // Call the parent destroy method
