@@ -12,6 +12,12 @@ const STOP_MARGIN = 10;
 const SPAWN_SENSOR_LENGTH = 160;
 const MIN_SPEED = 0.45;
 const MAX_SPEED = 0.85;
+// A car going first must leave the junction this long before an older crossing car reaches it.
+const CLEARANCE_STEPS = 120;
+// Share of its top speed a car is assumed to average while crossing.
+const CROSSING_SPEED_SHARE = 0.8;
+// How close to the junction a crossing car must be for others to notice it.
+const SIGHT_DISTANCE = 600;
 
 // angle in degrees, lanes per direction, spawnDistance from the center along the road.
 const MAIN_ROAD = { angle: 0, lanes: 2, spawnDistance: 880 };
@@ -38,15 +44,16 @@ function crossingInterval(road, cross, t) {
   return [Math.min(a, b), Math.max(a, b)];
 }
 
-// Distance from the center at which traffic moving in `direction` (1 or -1) reaches the crossing road.
-function stopDistance(road, cross, direction) {
+// Distances from the center, along the road, where traffic moving in `direction` (1 or -1) enters and leaves the crossing road.
+function junctionSpan(road, cross, direction) {
   const edges = [0, (direction * roadWidth(road)) / 2];
-  return Math.max(
-    ...edges.map((t) => {
-      const [from, to] = crossingInterval(road, cross, t);
-      return direction > 0 ? -from : to;
-    })
-  );
+  const ranges = edges.map((t) => crossingInterval(road, cross, t));
+  return {
+    entry: Math.max(
+      ...ranges.map(([from, to]) => (direction > 0 ? -from : to))
+    ),
+    exit: Math.max(...ranges.map(([from, to]) => (direction > 0 ? to : -from))),
+  };
 }
 
 class Example extends Phaser.Scene {
@@ -76,6 +83,7 @@ class Example extends Phaser.Scene {
 
     ROADS.forEach((road) => {
       const cross = ROADS.find((other) => other !== road);
+      road.spans = {};
 
       [1, -1].forEach((direction) => {
         for (let lane = 0; lane < road.lanes; lane++) {
@@ -88,6 +96,8 @@ class Example extends Phaser.Scene {
             x: position.x,
             y: position.y,
             angle: road.angle + (direction > 0 ? 0 : 180),
+            road,
+            direction,
             sensor: new SensorRectangle(
               this,
               position.x,
@@ -99,8 +109,14 @@ class Example extends Phaser.Scene {
           });
         }
 
-        const lightDistance =
-          stopDistance(road, cross, direction) + STOP_MARGIN + LIGHT_DEPTH / 2;
+        const span = junctionSpan(road, cross, direction);
+        // Progress is the distance past the center along the direction of travel.
+        road.spans[direction] = {
+          start: -(span.entry + STOP_MARGIN),
+          end: span.exit + CAR_LENGTH / 2,
+        };
+
+        const lightDistance = span.entry + STOP_MARGIN + LIGHT_DEPTH / 2;
         const lightPosition = roadPoint(
           road,
           -direction * lightDistance,
@@ -169,7 +185,7 @@ class Example extends Phaser.Scene {
         return;
       }
 
-      this.spawnPoints.forEach(({ x, y, angle, sensor }) => {
+      this.spawnPoints.forEach(({ x, y, angle, road, direction, sensor }) => {
         if (sensor.numberOfOverlaps === 0) {
           i++;
           this.createCar(
@@ -178,7 +194,9 @@ class Example extends Phaser.Scene {
             y,
             angle,
             Phaser.Math.FloatBetween(MIN_SPEED, MAX_SPEED),
-            i
+            i,
+            road,
+            direction
           );
         }
       });
@@ -190,12 +208,91 @@ class Example extends Phaser.Scene {
   createUi() {
     document.getElementById("test").addEventListener("click", () => {
       this.trafficLights.forEach((light) => light.toggle());
+    });
+  }
 
-      if (this.trafficLights[0].disabled) {
-        this.raycaster.removeMappedObjects(this.trafficLights);
-      } else {
-        this.raycaster.mapGameObjects(this.trafficLights);
+  get signalsOff() {
+    return this.trafficLights[0].disabled;
+  }
+
+  // Distance past the junction center along the car's direction of travel.
+  progress(car) {
+    const angle = Phaser.Math.DegToRad(car.road.angle);
+    return (
+      ((car.x - CENTER_X) * Math.cos(angle) +
+        (car.y - CENTER_Y) * Math.sin(angle)) *
+      car.direction
+    );
+  }
+
+  isInsideJunction(car) {
+    return ROADS.every((road) => {
+      const angle = Phaser.Math.DegToRad(road.angle);
+      const lateral =
+        -(car.x - CENTER_X) * Math.sin(angle) +
+        (car.y - CENTER_Y) * Math.cos(angle);
+      return Math.abs(lateral) <= roadWidth(road) / 2 + CAR_LENGTH / 2;
+    });
+  }
+
+  // Whether a crossing car in sight is moving or already past its stop line.
+  seesCrossTraffic(car) {
+    return this.carsGroup.some((other) => {
+      if (other.road === car.road) {
+        return false;
       }
+      const span = other.road.spans[other.direction];
+      const progress = this.progress(other);
+      const velocity = other.getVelocity();
+      const isMoving = Math.hypot(velocity.x, velocity.y) > 0.1;
+      const isInSight =
+        Math.hypot(other.x - CENTER_X, other.y - CENTER_Y) < SIGHT_DISTANCE;
+      return (
+        isInSight &&
+        progress <= span.end &&
+        (isMoving || progress >= span.start)
+      );
+    });
+  }
+
+  // With lights on, only a crossing car already in the junction blocks. With lights off, older crossing
+  // cars also block unless this car clears the junction before they arrive, so the oldest always goes first.
+  isJunctionBlockedFor(car) {
+    if (this.signalsOff && car.blind) {
+      return false;
+    }
+    const span = car.road.spans[car.direction];
+    const progress = this.progress(car);
+    if (this.signalsOff && progress >= span.start) {
+      return false;
+    }
+    const clearSteps =
+      (span.end - progress) / (CROSSING_SPEED_SHARE * car.initialSpeed);
+
+    return this.carsGroup.some((other) => {
+      if (other === car || other.road === car.road) {
+        return false;
+      }
+      const otherSpan = other.road.spans[other.direction];
+      const otherProgress = this.progress(other);
+      if (otherProgress > otherSpan.end) {
+        return false;
+      }
+      const occupies = this.signalsOff
+        ? otherProgress >= otherSpan.start
+        : this.isInsideJunction(other);
+      if (occupies) {
+        return true;
+      }
+      if (
+        !this.signalsOff ||
+        other.crashed ||
+        Number(other.name) > Number(car.name)
+      ) {
+        return false;
+      }
+      const arrivalSteps = (otherSpan.start - otherProgress) / other.initialSpeed;
+      return arrivalSteps < clearSteps + CLEARANCE_STEPS;
     });
   }
 
@@ -250,8 +347,10 @@ class Example extends Phaser.Scene {
     });
   }
 
-  createCar(scene, x, y, angle, speed, name) {
+  createCar(scene, x, y, angle, speed, name, road, direction) {
     const car = new Car(scene, x, y, angle, speed, name);
+    car.road = road;
+    car.direction = direction;
     this.carsGroup.push(car);
     //map car
     this.raycaster.mapGameObjects(car, true);

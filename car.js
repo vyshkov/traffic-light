@@ -1,12 +1,21 @@
 const CAR_WIDTH = 50;
 const CAR_LENGTH = 80;
-// Each car picks its own reach beyond the front from this range; side rays use it as their length from the center.
+// Each car picks its own reach beyond the front from this range.
 const RAY_REACH_MIN = 120;
 const RAY_REACH_MAX = 180;
-// Reach beyond the front at which a car starts stopping for a non-green light, so queues form close to the stop line.
+// Reach beyond the front at which a car starts stopping for a light, so queues form close to the stop line.
 const LIGHT_REACH = 100;
-// Side ray angles (degrees) relative to the heading.
-const SIDE_RAY_ANGLES = [-30, -15, 15, 30];
+// Gap kept to the obstacle ahead and the strongest brake (air friction per step).
+const MIN_GAP = 15;
+const MAX_BRAKE_FRICTION = 0.1;
+
+// Risky (red) drivers are faster, look less far ahead, tailgate and sometimes brake hard for no reason.
+const RISKY_CHANCE = 0.15;
+const RISKY_SPEED_FACTOR = 1.3;
+const RISKY_REACH_FACTOR = 0.5;
+const SUDDEN_BRAKE_CHANCE = 1 / 1500; // per step
+// Share of risky drivers who don't check crossing traffic when the lights are off.
+const RISKY_BLIND_CHANCE = 0.3;
 
 const { Vector, Query, World, Composite } = Phaser.Physics.Matter.Matter;
 
@@ -17,20 +26,30 @@ class Car extends Phaser.Physics.Matter.Sprite {
     this.body.name = name;
     this.name = name;
 
-    this.speed = speed;
-    this.initialSpeed = speed;
-    const reach = Phaser.Math.FloatBetween(RAY_REACH_MIN, RAY_REACH_MAX);
+    this.risky = Math.random() < RISKY_CHANCE;
+    this.blind = this.risky && Math.random() < RISKY_BLIND_CHANCE;
+    this.suddenBrakeSteps = 0;
+    this.speed = this.risky ? speed * RISKY_SPEED_FACTOR : speed;
+    this.initialSpeed = this.speed;
+    const reach =
+      Phaser.Math.FloatBetween(RAY_REACH_MIN, RAY_REACH_MAX) *
+      (this.risky ? RISKY_REACH_FACTOR : 1);
+    this.minGap = this.risky ? MIN_GAP / 3 : MIN_GAP;
     // Rays start at the center, so add half the car length to keep the reach past the front.
     this.rayLength = reach + CAR_LENGTH / 2;
-    this.sideRayLength = reach;
     this.lightRayLength = LIGHT_REACH + CAR_LENGTH / 2;
     this.rayColor = 0xffffff;
     this.setDisplaySize(CAR_LENGTH, CAR_WIDTH);
+    if (this.risky) {
+      this.setTint(0xff0000);
+    }
 
     this.setAngle(angle);
     this.setMass(1);
     this.setIgnoreGravity(true);
     this.rayGraphics = this.scene.add.graphics();
+
+    this.baseFrictionAir = this.body.frictionAir;
 
     this.scene.add.existing(this); // Add the car to the scene
 
@@ -52,22 +71,13 @@ class Car extends Phaser.Physics.Matter.Sprite {
     this.ray.setOrigin(this.x, this.y);
     // Set the ray angle to the car angle
     this.ray.setAngle(this.rotation);
-
-    this.sideRays = SIDE_RAY_ANGLES.map((deg) => ({
-      ray: this.scene.raycaster.createRay(),
-      angle: Phaser.Math.DegToRad(deg),
-    }));
   }
 
-  // Side rays only react to crashed cars or older crossing cars, so two crossing cars can't block each other forever.
-  shouldYieldTo(other) {
-    if (other.label !== "car") {
-      return false;
-    }
-    // Cars in neighboring lanes run parallel to this one and are not a threat.
-    const isCrossing = Math.abs(Math.sin(other.rotation - this.rotation)) > 0.5;
-    return (
-      other.crashed || (isCrossing && Number(other.name) < Number(this.name))
+  // Brakes just hard enough to stop within `gap`; coasting alone is used when that is enough.
+  brakeFor(gap, speed) {
+    const friction = speed / Math.max(gap, 1);
+    this.setFrictionAir(
+      Phaser.Math.Clamp(friction, this.baseFrictionAir, MAX_BRAKE_FRICTION)
     );
   }
 
@@ -83,11 +93,11 @@ class Car extends Phaser.Physics.Matter.Sprite {
     const originX = this.x;
     const originY = this.y;
     // The car is mapped too, so exclude it or rays starting at its center would hit itself.
-    // Green lights are skipped so they don't hide cars standing just beyond them.
+    // Lights that let this car pass are skipped so they don't hide cars standing just beyond them.
     const objects = this.scene.raycaster.mappedObjects.filter(
       (object) =>
         object !== this &&
-        !(object.label === "trafficLight" && object.state === "green")
+        !(object.label === "trafficLight" && !object.stopsCar(this))
     );
 
     this.ray.setOrigin(originX, originY);
@@ -116,75 +126,46 @@ class Car extends Phaser.Physics.Matter.Sprite {
       );
     }
 
-    let sideHit = null;
-
-    this.sideRays.forEach(({ ray, angle }) => {
-      const rayAngle = this.rotation + angle;
-      ray.setOrigin(originX, originY);
-      ray.setAngle(rayAngle);
-      const hit = ray.cast({ objects });
-
-      this.rayGraphics.beginPath();
-      this.rayGraphics.moveTo(originX, originY);
-      this.rayGraphics.lineTo(
-        originX + Math.cos(rayAngle) * this.sideRayLength,
-        originY + Math.sin(rayAngle) * this.sideRayLength
-      );
-      this.rayGraphics.closePath();
-      this.rayGraphics.strokePath();
-
-      if (!hit || !hit.object || !this.shouldYieldTo(hit.object)) {
-        return;
-      }
-      const hitDistance = Phaser.Math.Distance.Between(
-        originX,
-        originY,
-        hit.x,
-        hit.y
-      );
-      if (hitDistance < this.sideRayLength) {
-        this.rayGraphics.strokeCircle(hit.x, hit.y, 5);
-        if (!sideHit || hitDistance < sideHit.distance) {
-          sideHit = { intersection: hit, distance: hitDistance };
-        }
-      }
-    });
-
-    // A traffic light straight ahead takes priority over side detections.
-    if (sideHit) {
-      const mainHit = this.intersection;
-      const mainIsLight =
-        mainHit && mainHit.object && mainHit.object.label === "trafficLight";
-      const mainDistance = mainHit
-        ? Phaser.Math.Distance.Between(originX, originY, mainHit.x, mainHit.y)
-        : Infinity;
-      if (!mainIsLight && sideHit.distance < mainDistance) {
-        this.intersection = sideHit.intersection;
-      }
-    }
-
     this.text.setPosition(this.body.position.x, this.body.position.y);
     const velocity = this.getVelocity();
     const velocityMagnitude = Math.sqrt(
       velocity.x * velocity.x + velocity.y * velocity.y
     );
+    this.setFrictionAir(this.baseFrictionAir);
+    if (
+      this.risky &&
+      !this.crashed &&
+      this.suddenBrakeSteps === 0 &&
+      velocityMagnitude > 0.3 &&
+      Math.random() < SUDDEN_BRAKE_CHANCE
+    ) {
+      this.suddenBrakeSteps = Phaser.Math.Between(30, 80);
+    }
+
     if (this.crashed) {
       this.setTint(0x555888);
       this.text.setTint(0xff00000);
       this.text.setText(this.name + "\ncrash");
       this.speed = 0;
+    } else if (this.suddenBrakeSteps > 0) {
+      this.suddenBrakeSteps--;
+      this.setFrictionAir(MAX_BRAKE_FRICTION);
     } else if (this.intersection && this.intersection.object) {
       let distance = Phaser.Math.Distance.BetweenPoints(
         new Phaser.Math.Vector2(originX, originY),
         this.intersection
       );
 
-      if (this.intersection.object.label === "trafficLight") {
-        if (
-          distance < this.lightRayLength &&
-          this.intersection.object.state !== "green"
-        ) {
+      const isLight = this.intersection.object.label === "trafficLight";
+      if (!isLight && distance < this.rayLength) {
+        this.brakeFor(distance - CAR_LENGTH / 2 - this.minGap, velocityMagnitude);
+      }
+
+      if (isLight) {
+        // Lights that let this car pass are not in the cast, so a hit light always means stop.
+        if (distance < this.lightRayLength) {
           this.speed = 0;
+          this.brakeFor(distance - CAR_LENGTH / 2, velocityMagnitude);
         } else {
           this.speed = this.initialSpeed;
           if (velocityMagnitude < this.speed) {
@@ -221,7 +202,6 @@ class Car extends Phaser.Physics.Matter.Sprite {
   destroy() {
     this.destroyed = true;
     this.ray.destroy();
-    this.sideRays.forEach(({ ray }) => ray.destroy());
     this.rayGraphics.destroy();
     this.text.destroy();
     // Call the parent destroy method

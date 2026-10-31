@@ -64,6 +64,14 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
     }
   }
 
+  // A disabled light is a yield line: cars stop only while crossing traffic has the junction.
+  stopsCar(car) {
+    if (!this.disabled && this.state !== "green") {
+      return !car.risky || this.scene.seesCrossTraffic(car);
+    }
+    return this.scene.isJunctionBlockedFor(car);
+  }
+
   updateBackgroundColor() {
     this.background.clear();
 
