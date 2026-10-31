@@ -1,8 +1,11 @@
 const CAR_WIDTH = 50;
 const CAR_LENGTH = 80;
-// Reach beyond the car's front; side rays use it as their length from the center.
-const RAY_LENGTH = 100;
-// Side ray angles (degrees) relative to the heading; kept under ~30 so oncoming-lane cars are not hit.
+// Each car picks its own reach beyond the front from this range; side rays use it as their length from the center.
+const RAY_REACH_MIN = 120;
+const RAY_REACH_MAX = 180;
+// Reach beyond the front at which a car starts stopping for a non-green light, so queues form close to the stop line.
+const LIGHT_REACH = 100;
+// Side ray angles (degrees) relative to the heading.
 const SIDE_RAY_ANGLES = [-30, -15, 15, 30];
 
 const { Vector, Query, World, Composite } = Phaser.Physics.Matter.Matter;
@@ -16,8 +19,11 @@ class Car extends Phaser.Physics.Matter.Sprite {
 
     this.speed = speed;
     this.initialSpeed = speed;
+    const reach = Phaser.Math.FloatBetween(RAY_REACH_MIN, RAY_REACH_MAX);
     // Rays start at the center, so add half the car length to keep the reach past the front.
-    this.rayLength = RAY_LENGTH + CAR_LENGTH / 2;
+    this.rayLength = reach + CAR_LENGTH / 2;
+    this.sideRayLength = reach;
+    this.lightRayLength = LIGHT_REACH + CAR_LENGTH / 2;
     this.rayColor = 0xffffff;
     this.setDisplaySize(CAR_LENGTH, CAR_WIDTH);
 
@@ -53,11 +59,15 @@ class Car extends Phaser.Physics.Matter.Sprite {
     }));
   }
 
-  // Side rays only react to crashed or older cars, so two crossing cars can't block each other forever.
+  // Side rays only react to crashed cars or older crossing cars, so two crossing cars can't block each other forever.
   shouldYieldTo(other) {
+    if (other.label !== "car") {
+      return false;
+    }
+    // Cars in neighboring lanes run parallel to this one and are not a threat.
+    const isCrossing = Math.abs(Math.sin(other.rotation - this.rotation)) > 0.5;
     return (
-      other.label === "car" &&
-      (other.crashed || Number(other.name) < Number(this.name))
+      other.crashed || (isCrossing && Number(other.name) < Number(this.name))
     );
   }
 
@@ -73,8 +83,11 @@ class Car extends Phaser.Physics.Matter.Sprite {
     const originX = this.x;
     const originY = this.y;
     // The car is mapped too, so exclude it or rays starting at its center would hit itself.
+    // Green lights are skipped so they don't hide cars standing just beyond them.
     const objects = this.scene.raycaster.mappedObjects.filter(
-      (object) => object !== this
+      (object) =>
+        object !== this &&
+        !(object.label === "trafficLight" && object.state === "green")
     );
 
     this.ray.setOrigin(originX, originY);
@@ -114,8 +127,8 @@ class Car extends Phaser.Physics.Matter.Sprite {
       this.rayGraphics.beginPath();
       this.rayGraphics.moveTo(originX, originY);
       this.rayGraphics.lineTo(
-        originX + Math.cos(rayAngle) * RAY_LENGTH,
-        originY + Math.sin(rayAngle) * RAY_LENGTH
+        originX + Math.cos(rayAngle) * this.sideRayLength,
+        originY + Math.sin(rayAngle) * this.sideRayLength
       );
       this.rayGraphics.closePath();
       this.rayGraphics.strokePath();
@@ -129,7 +142,7 @@ class Car extends Phaser.Physics.Matter.Sprite {
         hit.x,
         hit.y
       );
-      if (hitDistance < RAY_LENGTH) {
+      if (hitDistance < this.sideRayLength) {
         this.rayGraphics.strokeCircle(hit.x, hit.y, 5);
         if (!sideHit || hitDistance < sideHit.distance) {
           sideHit = { intersection: hit, distance: hitDistance };
@@ -168,7 +181,7 @@ class Car extends Phaser.Physics.Matter.Sprite {
 
       if (this.intersection.object.label === "trafficLight") {
         if (
-          distance < this.rayLength &&
+          distance < this.lightRayLength &&
           this.intersection.object.state !== "green"
         ) {
           this.speed = 0;

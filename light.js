@@ -1,7 +1,9 @@
 const trafficLightColors = ["green", "yellow", "red", "yellow"];
+// Long enough for the slowest car to clear the junction while both roads are stopped.
+const PHASE_DURATION_MS = 20000;
 
 class TrafficLight extends Phaser.Physics.Matter.Sprite {
-  constructor(scene, x, y, width, height, options) {
+  constructor(scene, x, y, width, height, angle = 0, options) {
     super(scene.matter.world, x, y, null, null, options);
     this.lastCarName = null;
     this.counter = 0;
@@ -21,6 +23,7 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
     this.height = height;
     // Set the sensor property to true to make it a sensor
     this.setSensor(true);
+    this.setAngle(angle);
 
     // Add the custom sensor rectangle to the scene
     scene.add.existing(this);
@@ -41,7 +44,7 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
       if (!this.disabled) {
         this.nextState();
       }
-    }, 12000);
+    }, PHASE_DURATION_MS);
   }
 
   nextState() {
@@ -72,12 +75,8 @@ class TrafficLight extends Phaser.Physics.Matter.Sprite {
       this.background.fillStyle(0xff0000, 0.5);
     }
 
-    this.background.fillRect(
-      this.x - this.width / 2,
-      this.y - this.height / 2,
-      this.width,
-      this.height
-    );
+    // The body vertices are in world coordinates, so this also covers rotated lights.
+    this.background.fillPoints(this.body.vertices, true);
   }
 
   collisionStart() {
